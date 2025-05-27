@@ -5,7 +5,14 @@ from typing import List
 from fastapi import FastAPI, Query
 from fastapi.responses import StreamingResponse
 from google import genai
-from google.genai.types import Content, LiveConnectConfig, Modality, Part, UsageMetadata
+from google.genai.types import (
+    Content,
+    GenerateContentConfig,
+    LiveConnectConfig,
+    Modality,
+    Part,
+    UsageMetadata,
+)
 from pydantic import BaseModel
 
 from .utils.phone_call import Task, make_phone_call
@@ -21,7 +28,7 @@ logging.basicConfig(
 
 BEGIN_TASK_DEFINITION = "--- BEGIN TASK DEFINITION ---"
 END_TASK_DEFINITION = "--- END TASK DEFINITION ---"
-SYSTEM_INSTRUCTION = f"""
+SYSTEM_INSTRUCTION = """
 You are a helpful AI assistant. You are talking to a user who should give you the following info:
 - The name of a business
 - The phone number of the business
@@ -36,27 +43,65 @@ If the task is very vague, you are welcome to ask clarifying questions to the us
 Once you have the required info, confirm to the user the info you have and ask them if they would like to proceed with the task.
 If they reject, you can go back to the beginning of the conversation.
 
-If they accept, your next message should be:
-{BEGIN_TASK_DEFINITION}
-{{"business_name": {{business_name}}, "business_phone_number": {{business_phone_number}}, "task": {{task}}}}
-{END_TASK_DEFINITION}
-
-It is a grave error to not follow the above instructions. It is an even worse error
-to not abide by the output format given to you below. This format will be parsed via
-python, therefore it is imperative that you follow the format exactly.
+If they accept, let the user know you're taking on the task and will let them know when you're done.
 """
 
-model = "gemini-2.0-flash-live-001"
-config = LiveConnectConfig(
-    system_instruction=Content(role="system", parts=[Part(text=SYSTEM_INSTRUCTION)]),
-    response_modalities=[Modality.TEXT],
-)
+TASK_SYSTEM_INSTRUCTION = """
+You are a helpful AI assistant. You are talking to a user who should give you the following info:
+- The name of a business
+- The phone number of the business
+- A task that the user wants completed by calling the business.
+
+If the user does not provide the required info, you should ask them for it.
+If the user asks for a task that is not possible to complete via a phone call, you should
+reject and inform the user that you can only take on tasks that are possible to complete via a phone call.
+
+If the task is very vague, you are welcome to ask clarifying questions to the user.
+
+Once you have the required info, confirm to the user the info you have and ask them if they would like to proceed with the task.
+If they reject, you can go back to the beginning of the conversation.
+
+If they accept, your next message should be in the json format provided alongside your config.
+
+Your response should have .task set to 'None' UNTIL the user confirms the task
+"""
+
+live_model = "gemini-2.0-flash-live-001"
+task_model = "gemini-2.0-flash"
+# config = LiveConnectConfig(
+#     system_instruction=Content(role="system", parts=[Part(text=SYSTEM_INSTRUCTION)]),
+#     response_modalities=[Modality.TEXT],
+# )
 
 client = genai.Client(api_key=get_setting("GEMINI_API_KEY"))
 
 
+class TaskOrNone(BaseModel):
+    task: Task | None = None
+
+
 class Request(BaseModel):
     messages: List[ClientMessage]
+
+
+def create_config():
+    return LiveConnectConfig(
+        system_instruction=Content(
+            role="system", parts=[Part(text=SYSTEM_INSTRUCTION)]
+        ),
+        response_modalities=[Modality.TEXT],
+    )
+
+
+def create_task_config():
+    return GenerateContentConfig(
+        system_instruction=Content(
+            role="system", parts=[Part(text=TASK_SYSTEM_INSTRUCTION)]
+        ),
+        response_modalities=[Modality.TEXT],
+        response_mime_type="application/json",
+        response_schema=TaskOrNone,
+    )
 
 
 def create_text_response(text: str):
@@ -75,17 +120,23 @@ def create_end_response(finish_reason: str, usage_metadata: UsageMetadata):
     return f"d:{json.dumps(return_dict)}\n".encode("utf-8")
 
 
+async def generate_task(messages: List[Content]) -> TaskOrNone:
+    resp = await client.aio.models.generate_content(
+        model=task_model, contents=messages, config=create_task_config()
+    )
+    return resp.parsed
+
+
 async def do_stream(messages: List[ClientMessage]):
     all_messages = convert_to_gemini_messages(messages)
     async with client.aio.live.connect(
-        model=model,
-        config=config,
+        model=live_model,
+        config=create_config(),
     ) as session:
         await session.send_client_content(
             turns=all_messages,
             turn_complete=True,
         )
-        task_def: str | None = None
         async for response in session.receive():
             if response.server_content.turn_complete:
                 yield create_end_response(
@@ -96,32 +147,11 @@ async def do_stream(messages: List[ClientMessage]):
             if response.text is None:
                 continue
 
-            if BEGIN_TASK_DEFINITION in response.text:
-                assert task_def is None
+            yield create_text_response(response.text)
 
-                if END_TASK_DEFINITION in response.text:
-                    task_def = (
-                        response.text.split(BEGIN_TASK_DEFINITION)[1]
-                        .split(END_TASK_DEFINITION)[0]
-                        .strip()
-                    )
-                    print(f"The full task appears to be: {task_def}")
-                    task = json.loads(task_def)
-                    await make_phone_call(Task(**task))
-                else:
-                    task_def = response.text.split(BEGIN_TASK_DEFINITION)[1]
-                continue
-
-            if task_def is not None:
-                if END_TASK_DEFINITION in response.text:
-                    task_def += response.text.split(END_TASK_DEFINITION)[0].strip()
-                    print(f"The task appears to be: {task_def}")
-                    task = json.loads(task_def)
-                    await make_phone_call(Task(**task))
-                    continue
-                task_def += response.text
-            else:
-                yield create_text_response(response.text)
+    task_or_none = await generate_task(all_messages)
+    if task_or_none.task is not None:
+        await make_phone_call(task_or_none.task)
 
 
 @app.post("/api/chat")

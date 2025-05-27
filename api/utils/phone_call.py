@@ -6,6 +6,7 @@ import pyaudio
 from google import genai
 from google.genai import types
 from google.genai.types import Content, Part
+from pydantic import BaseModel
 
 from .settings import get_setting
 
@@ -18,8 +19,7 @@ CHUNK_SIZE = 1024
 pya = pyaudio.PyAudio()
 
 
-@dataclass
-class Task:
+class Task(BaseModel):
     business_name: str
     business_phone_number: str
     task: str
