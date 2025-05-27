@@ -7,7 +7,7 @@ from google import genai
 from google.genai.types import UsageMetadata
 from pydantic import BaseModel
 
-from .utils.prompt import ClientMessage
+from .utils.prompt import ClientMessage, convert_to_gemini_messages
 from .utils.settings import get_setting
 
 app = FastAPI()
@@ -39,13 +39,13 @@ def create_end_response(finish_reason: str, usage_metadata: UsageMetadata):
 
 
 async def do_stream(messages: List[ClientMessage]):
+    all_messages = convert_to_gemini_messages(messages)
     async with client.aio.live.connect(model=model, config=config) as session:
         await session.send_client_content(
-            turns={"role": "user", "parts": [{"text": messages[-1].content}]},
+            turns=all_messages,
             turn_complete=True,
         )
         async for response in session.receive():
-            print(response)
             if response.text is not None:
                 yield create_text_response(response.text)
 
