@@ -4,7 +4,8 @@ import traceback
 import pyaudio
 from google import genai
 from google.genai import types
-from settings import get_setting
+
+from .settings import get_setting
 
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
