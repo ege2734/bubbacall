@@ -4,7 +4,7 @@ from typing import List
 from fastapi import FastAPI, Query
 from fastapi.responses import StreamingResponse
 from google import genai
-from google.genai.types import UsageMetadata
+from google.genai.types import Content, LiveConnectConfig, Modality, Part, UsageMetadata
 from pydantic import BaseModel
 
 from .utils.prompt import ClientMessage, convert_to_gemini_messages
@@ -12,8 +12,39 @@ from .utils.settings import get_setting
 
 app = FastAPI()
 
+
+SYSTEM_INSTRUCTION = """
+You are a helpful AI assistant. You are talking to a user who should give you the following info:
+- The name of a business
+- The phone number of the business
+- A task that the user wants completed by calling the business.
+
+If the user does not provide the required info, you should ask them for it.
+If the user asks for a task that is not possible to complete via a phone call, you should
+reject and inform the user that you can only take on tasks that are possible to complete via a phone call.
+
+If the task is very vague, you are welcome to ask clarifying questions to the user.
+
+Once you have the required info, confirm to the user the info you have and ask them if they would like to proceed with the task.
+If they reject, you can go back to the beginning of the conversation.
+
+If they accept, your next message should be:
+--- BEGIN TASK DEFINITION ---
+Business name: {business_name}
+Business phone number: {business_phone_number}
+Task: {task}
+--- END TASK DEFINITION ---
+
+It is a grave error to not follow the above instructions. It is an even worse error
+to not abide by the output format given to you below. This format will be parsed via
+python, therefore it is imperative that you follow the format exactly.
+"""
+
 model = "gemini-2.0-flash-live-001"
-config = {"response_modalities": ["TEXT"]}
+config = LiveConnectConfig(
+    system_instruction=Content(role="system", parts=[Part(text=SYSTEM_INSTRUCTION)]),
+    response_modalities=[Modality.TEXT],
+)
 
 client = genai.Client(api_key=get_setting("GEMINI_API_KEY"))
 
@@ -40,7 +71,10 @@ def create_end_response(finish_reason: str, usage_metadata: UsageMetadata):
 
 async def do_stream(messages: List[ClientMessage]):
     all_messages = convert_to_gemini_messages(messages)
-    async with client.aio.live.connect(model=model, config=config) as session:
+    async with client.aio.live.connect(
+        model=model,
+        config=config,
+    ) as session:
         await session.send_client_content(
             turns=all_messages,
             turn_complete=True,
