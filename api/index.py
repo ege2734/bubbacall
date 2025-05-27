@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import List
 
 from fastapi import FastAPI, Query
@@ -7,13 +8,20 @@ from google import genai
 from google.genai.types import Content, LiveConnectConfig, Modality, Part, UsageMetadata
 from pydantic import BaseModel
 
+from .utils.phone_call import Task, make_phone_call
 from .utils.prompt import ClientMessage, convert_to_gemini_messages
 from .utils.settings import get_setting
 
 app = FastAPI()
 
+# Add basic logging configuration
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-SYSTEM_INSTRUCTION = """
+BEGIN_TASK_DEFINITION = "--- BEGIN TASK DEFINITION ---"
+END_TASK_DEFINITION = "--- END TASK DEFINITION ---"
+SYSTEM_INSTRUCTION = f"""
 You are a helpful AI assistant. You are talking to a user who should give you the following info:
 - The name of a business
 - The phone number of the business
@@ -29,11 +37,9 @@ Once you have the required info, confirm to the user the info you have and ask t
 If they reject, you can go back to the beginning of the conversation.
 
 If they accept, your next message should be:
---- BEGIN TASK DEFINITION ---
-Business name: {business_name}
-Business phone number: {business_phone_number}
-Task: {task}
---- END TASK DEFINITION ---
+{BEGIN_TASK_DEFINITION}
+{{"business_name": {{business_name}}, "business_phone_number": {{business_phone_number}}, "task": {{task}}}}
+{END_TASK_DEFINITION}
 
 It is a grave error to not follow the above instructions. It is an even worse error
 to not abide by the output format given to you below. This format will be parsed via
@@ -79,15 +85,43 @@ async def do_stream(messages: List[ClientMessage]):
             turns=all_messages,
             turn_complete=True,
         )
+        task_def: str | None = None
         async for response in session.receive():
-            if response.text is not None:
-                yield create_text_response(response.text)
-
             if response.server_content.turn_complete:
                 yield create_end_response(
                     finish_reason="stop",
                     usage_metadata=response.usage_metadata,
                 )
+                continue
+            if response.text is None:
+                continue
+
+            if BEGIN_TASK_DEFINITION in response.text:
+                assert task_def is None
+
+                if END_TASK_DEFINITION in response.text:
+                    task_def = (
+                        response.text.split(BEGIN_TASK_DEFINITION)[1]
+                        .split(END_TASK_DEFINITION)[0]
+                        .strip()
+                    )
+                    print(f"The full task appears to be: {task_def}")
+                    task = json.loads(task_def)
+                    await make_phone_call(Task(**task))
+                else:
+                    task_def = response.text.split(BEGIN_TASK_DEFINITION)[1]
+                continue
+
+            if task_def is not None:
+                if END_TASK_DEFINITION in response.text:
+                    task_def += response.text.split(END_TASK_DEFINITION)[0].strip()
+                    print(f"The task appears to be: {task_def}")
+                    task = json.loads(task_def)
+                    await make_phone_call(Task(**task))
+                    continue
+                task_def += response.text
+            else:
+                yield create_text_response(response.text)
 
 
 @app.post("/api/chat")
