@@ -30,10 +30,9 @@ class LocalSpeakerMicOperator(StreamOperator):
 
     def __init__(
         self,
-        name: str,
         config: SpeakerMicConfig = SpeakerMicConfig(),
     ):
-        super().__init__(name)
+        super().__init__("localspeakermic")
         self.speakermic_config = config
         self.pya = pyaudio.PyAudio()
 

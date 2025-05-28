@@ -17,8 +17,8 @@ class GeminiStreamOperator(StreamOperator):
     This operator does not own the lifetime of the `session`.
     """
 
-    def __init__(self, name: str, session: genai.live.AsyncSession):
-        super().__init__(name)
+    def __init__(self, session: genai.live.AsyncSession):
+        super().__init__("gemini_stream")
         self.session = session
 
     @override
