@@ -1,6 +1,5 @@
 import asyncio
 
-import pyaudio
 from google import genai
 from google.genai import types
 from google.genai.types import Content, Part
@@ -36,7 +35,15 @@ def get_system_instruction(task: Task) -> str:
     Navigate the phone call to complete the task.
     
     Once you have completed the task, you should thank the user. You don't have the capability to hang up, so instead
-    you should say THINK "{HANGUP_MAGIC_PHRASE}" but NEVER say it. Only think.
+    do not say anything further.
+
+    Throughout the conversation, do not indulge in any conversation that is not related to the task.
+    Do not reveal that you are an AI.
+    Do not reveal that you are a computer program.
+    Do not reveal that you are a robot.
+    Do not reveal that you are a machine.
+    Do not reveal that you are a computer.
+    Do not reveal that you are a machine.
     """
 
 
@@ -57,7 +64,7 @@ client = genai.Client(
     api_key=get_setting("GEMINI_API_KEY"), http_options={"api_version": "v1alpha"}
 )
 # The thinking one: gemini-2.5-flash-exp-native-audio-thinking-dialog
-MODEL = "gemini-2.5-flash-exp-native-audio-thinking-dialog"
+MODEL = "gemini-2.5-flash-preview-native-audio-dialog"
 
 
 async def make_phone_call(task: Task):

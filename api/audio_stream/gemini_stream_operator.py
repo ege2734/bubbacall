@@ -1,10 +1,43 @@
 from typing import override
 
 from google import genai
-from google.genai.types import Blob
+from google.genai.types import Blob, LiveServerMessage
 
 from api.audio_stream.stream_data import StreamData
 from api.audio_stream.stream_operator import StreamOperator
+
+
+def _get_data(resp: LiveServerMessage) -> bytes | None:
+    if (
+        not resp.server_content
+        or not resp.server_content
+        or not resp.server_content.model_turn
+        or not resp.server_content.model_turn.parts
+    ):
+        return None
+    concatenated_data = b""
+    for part in resp.server_content.model_turn.parts:
+        if part.inline_data and isinstance(part.inline_data.data, bytes):
+            concatenated_data += part.inline_data.data
+
+    return concatenated_data if len(concatenated_data) > 0 else None
+
+
+def _get_thought(resp: LiveServerMessage) -> str | None:
+    if (
+        not resp.server_content
+        or not resp.server_content
+        or not resp.server_content.model_turn
+        or not resp.server_content.model_turn.parts
+    ):
+        return None
+    text = ""
+    for part in resp.server_content.model_turn.parts:
+        if part.text is not None:
+            if part.thought is not None and part.thought:
+                text += part.text
+
+    return text if text else None
 
 
 class GeminiStreamOperator(StreamOperator):
@@ -37,24 +70,25 @@ class GeminiStreamOperator(StreamOperator):
                 blob: Blob | None = None
                 input_transcription: str | None = None
                 output_transcription: str | None = None
+                thought: str | None = None
                 if response.server_content.input_transcription:
                     input_transcription = (
                         response.server_content.input_transcription.text
                     )
-                    # print(f"Input transcription: {input_transcription}")
                 if response.server_content.output_transcription:
                     output_transcription = (
                         response.server_content.output_transcription.text
                     )
-                    # print(f"Output transcription: {output_transcription}")
-                if data := response.data:
+                if data := _get_data(response):
                     blob = Blob(data=data, mime_type="audio/pcm")
+                thought = _get_thought(response)
 
                 stream_data = StreamData(
                     originator=self.name,
                     blob=blob,
                     input_transcription=input_transcription,
                     output_transcription=output_transcription,
+                    thought=thought,
                 )
                 await self.receive_queue.put(stream_data)
 

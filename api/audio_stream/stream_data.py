@@ -9,3 +9,4 @@ class StreamData:
     blob: Blob | None = None
     input_transcription: str | None = None
     output_transcription: str | None = None
+    thought: str | None = None
