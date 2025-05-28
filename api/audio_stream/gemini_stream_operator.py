@@ -53,18 +53,23 @@ class GeminiStreamOperator(StreamOperator):
     def __init__(self, session: genai.live.AsyncSession):
         super().__init__("gemini_stream")
         self.session = session
+        self.call_ended = False
 
     @override
     async def send_task(self):
         while True:
             stream_data = await self.send_queue.get()
+            if self.call_ended:
+                continue
             if stream_data.blob is None:
-                return
+                continue
             await self.session.send_realtime_input(audio=stream_data.blob)
 
     @override
     async def receive_task(self):
         while True:
+            if self.call_ended:
+                continue
             turn = self.session.receive()
             async for response in turn:
                 blob: Blob | None = None
@@ -79,7 +84,7 @@ class GeminiStreamOperator(StreamOperator):
                     output_transcription = (
                         response.server_content.output_transcription.text
                     )
-                if data := _get_data(response):
+                if data := response.data:
                     blob = Blob(data=data, mime_type="audio/pcm")
                 thought = _get_thought(response)
 
@@ -96,5 +101,5 @@ class GeminiStreamOperator(StreamOperator):
             # For interruptions to work, we need to stop playback.
             # So empty out the audio queue because it may have loaded
             # much more audio than has played yet.
-            while not self.receive_queue.empty():
+            while not self.receive_queue.empty() and not self.call_ended:
                 self.receive_queue.get_nowait()

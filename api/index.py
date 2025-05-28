@@ -168,6 +168,14 @@ async def do_stream(messages: List[ClientMessage]):
         async for transcript in execute_phone_call(task_or_none.task):
             yield create_text_response(transcript)
 
+        yield create_end_response(
+            finish_reason="stop",
+            usage_metadata=UsageMetadata(
+                prompt_token_count=0,
+                response_token_count=0,
+            ),
+        )
+
 
 @app.post("/api/chat")
 async def handle_chat_data(request: Request, protocol: str = Query("data")):

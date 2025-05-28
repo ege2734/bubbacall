@@ -10,3 +10,4 @@ class StreamData:
     input_transcription: str | None = None
     output_transcription: str | None = None
     thought: str | None = None
+    force_end_call: bool = False

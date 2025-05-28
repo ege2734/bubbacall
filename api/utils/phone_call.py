@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from google import genai
 from google.genai import types
@@ -76,7 +77,7 @@ async def make_phone_call(task: Task):
     try:
         async with client.aio.live.connect(
             model=MODEL, config=make_config(get_system_instruction(task))
-        ) as session, asyncio.TaskGroup() as tg:
+        ) as session:
 
             new_stream_mediator = StreamMediator(
                 [
@@ -85,8 +86,8 @@ async def make_phone_call(task: Task):
                     TranscriptForwarder(out_queue=transcript_queue),
                 ]
             )
-            call_task = tg.create_task(new_stream_mediator.run())
-            get_queue_task = tg.create_task(transcript_queue.get())
+            call_task = asyncio.create_task(new_stream_mediator.run())
+            get_queue_task = asyncio.create_task(transcript_queue.get())
             while not call_task.done():
                 await asyncio.wait(
                     [call_task, get_queue_task],
@@ -94,7 +95,9 @@ async def make_phone_call(task: Task):
                 )
                 if get_queue_task.done():
                     yield get_queue_task.result()
-                    get_queue_task = tg.create_task(transcript_queue.get())
+                    get_queue_task = asyncio.create_task(transcript_queue.get())
     except asyncio.CancelledError:
+        pass
+    finally:
         call_task.cancel()
         get_queue_task.cancel()

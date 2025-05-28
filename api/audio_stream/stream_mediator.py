@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import traceback
 
 import aiostream
@@ -35,6 +36,13 @@ class StreamMediator:
                     )
                     async with combined_stream.stream() as receive_stream:
                         async for stream_data in receive_stream:
+                            if stream_data.force_end_call:
+                                for op in self.operators:
+                                    await op.close()
+                                for t in self.tasks:
+                                    t.cancel()
+                                logging.error("StreamMediator cancelled the tasks")
+                                return
                             # Forward received data to all other operators
                             for op in self.operators:
                                 await op.send(stream_data)
