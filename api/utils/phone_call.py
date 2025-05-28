@@ -8,6 +8,11 @@ from google.genai import types
 from google.genai.types import Content, Part
 from pydantic import BaseModel
 
+from api.audio_stream.gemini_stream_operator import GeminiStreamOperator
+from api.audio_stream.local_speakermic_operator import LocalSpeakerMicOperator
+from api.audio_stream.stream_mediator import StreamMediator
+from api.audio_stream.transcript_forwarder import TranscriptData, TranscriptForwarder
+
 from .settings import get_setting
 
 FORMAT = pyaudio.paInt16
@@ -166,5 +171,24 @@ class AudioLoop:
 
 
 async def make_phone_call(task: Task):
-    audio_loop = AudioLoop(make_config(get_system_instruction(task)))
-    await audio_loop.run()
+    transcript_queue: asyncio.Queue[TranscriptData] = asyncio.Queue()
+    async with client.aio.live.connect(
+        model=MODEL, config=make_config(get_system_instruction(task))
+    ) as session:
+
+        new_stream_mediator = StreamMediator(
+            [
+                LocalSpeakerMicOperator(),
+                GeminiStreamOperator(session=session),
+                TranscriptForwarder(out_queue=transcript_queue),
+            ]
+        )
+        call_task = asyncio.create_task(new_stream_mediator.run())
+        while not call_task.done():
+            get_queue_task = asyncio.create_task(transcript_queue.get())
+            await asyncio.wait(
+                [call_task, get_queue_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if get_queue_task.done():
+                yield get_queue_task.result()

@@ -127,6 +127,20 @@ async def generate_task(messages: List[Content]) -> TaskOrNone:
     return resp.parsed
 
 
+async def execute_phone_call(task: Task):
+    roles_lookup = {"input": task.business_name, "output": "Bubba"}
+    last_role: str | None = None
+    async for transcript in make_phone_call(task):
+        assert transcript.role in roles_lookup
+        if last_role == transcript.role:
+            resp_str = transcript.text
+        else:
+            last_role = transcript.role
+            resp_str = f"\n\n{roles_lookup[transcript.role]}: {transcript.text}"
+
+        yield resp_str
+
+
 async def do_stream(messages: List[ClientMessage]):
     all_messages = convert_to_gemini_messages(messages)
     async with client.aio.live.connect(
@@ -151,7 +165,8 @@ async def do_stream(messages: List[ClientMessage]):
 
     task_or_none = await generate_task(all_messages)
     if task_or_none.task is not None:
-        await make_phone_call(task_or_none.task)
+        async for transcript in execute_phone_call(task_or_none.task):
+            yield create_text_response(transcript)
 
 
 @app.post("/api/chat")
