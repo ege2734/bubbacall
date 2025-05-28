@@ -34,16 +34,9 @@ def get_system_instruction(task: Task) -> str:
     
     Navigate the phone call to complete the task.
     
-    Once you have completed the task, you should thank the user. You don't have the capability to hang up, so instead
-    do not say anything further.
-
     Throughout the conversation, do not indulge in any conversation that is not related to the task.
     Do not reveal that you are an AI.
     Do not reveal that you are a computer program.
-    Do not reveal that you are a robot.
-    Do not reveal that you are a machine.
-    Do not reveal that you are a computer.
-    Do not reveal that you are a machine.
     """
 
 
@@ -57,6 +50,17 @@ def make_config(system_instruction: str) -> types.LiveConnectConfig:
         system_instruction=Content(
             role="system", parts=[Part(text=system_instruction)]
         ),
+        # tools=[
+        #     types.Tool(
+        #         function_declarations=[
+        #             types.FunctionDeclaration(
+        #                 name="end_call",
+        #                 description="Call this function when you have completed your task and the call should be ended",
+        #                 parameters=types.Schema(),
+        #             )
+        #         ]
+        #     )
+        # ],
     )
 
 
@@ -69,23 +73,28 @@ MODEL = "gemini-2.5-flash-preview-native-audio-dialog"
 
 async def make_phone_call(task: Task):
     transcript_queue: asyncio.Queue[TranscriptData] = asyncio.Queue()
-    async with client.aio.live.connect(
-        model=MODEL, config=make_config(get_system_instruction(task))
-    ) as session:
+    try:
+        async with client.aio.live.connect(
+            model=MODEL, config=make_config(get_system_instruction(task))
+        ) as session, asyncio.TaskGroup() as tg:
 
-        new_stream_mediator = StreamMediator(
-            [
-                LocalSpeakerMicOperator(),
-                GeminiStreamOperator(session=session),
-                TranscriptForwarder(out_queue=transcript_queue),
-            ]
-        )
-        call_task = asyncio.create_task(new_stream_mediator.run())
-        while not call_task.done():
-            get_queue_task = asyncio.create_task(transcript_queue.get())
-            await asyncio.wait(
-                [call_task, get_queue_task],
-                return_when=asyncio.FIRST_COMPLETED,
+            new_stream_mediator = StreamMediator(
+                [
+                    LocalSpeakerMicOperator(),
+                    GeminiStreamOperator(session=session),
+                    TranscriptForwarder(out_queue=transcript_queue),
+                ]
             )
-            if get_queue_task.done():
-                yield get_queue_task.result()
+            call_task = tg.create_task(new_stream_mediator.run())
+            get_queue_task = tg.create_task(transcript_queue.get())
+            while not call_task.done():
+                await asyncio.wait(
+                    [call_task, get_queue_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if get_queue_task.done():
+                    yield get_queue_task.result()
+                    get_queue_task = tg.create_task(transcript_queue.get())
+    except asyncio.CancelledError:
+        call_task.cancel()
+        get_queue_task.cancel()
