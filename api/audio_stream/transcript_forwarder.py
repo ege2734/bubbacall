@@ -27,11 +27,11 @@ class TranscriptForwarder(StreamOperator):
             stream_data = await self.send_queue.get()
 
             if stream_data.input_transcription:
-                self.out_queue.put(
+                await self.out_queue.put(
                     TranscriptData(role="input", text=stream_data.input_transcription)
                 )
             if stream_data.output_transcription:
-                self.out_queue.put(
+                await self.out_queue.put(
                     TranscriptData(role="output", text=stream_data.output_transcription)
                 )
 

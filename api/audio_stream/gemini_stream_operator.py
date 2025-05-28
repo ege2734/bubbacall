@@ -41,12 +41,12 @@ class GeminiStreamOperator(StreamOperator):
                     input_transcription = (
                         response.server_content.input_transcription.text
                     )
-                    print(f"Input transcription: {input_transcription}")
+                    # print(f"Input transcription: {input_transcription}")
                 if response.server_content.output_transcription:
                     output_transcription = (
                         response.server_content.output_transcription.text
                     )
-                    print(f"Output transcription: {output_transcription}")
+                    # print(f"Output transcription: {output_transcription}")
                 if data := response.data:
                     blob = Blob(data=data, mime_type="audio/pcm")
 
