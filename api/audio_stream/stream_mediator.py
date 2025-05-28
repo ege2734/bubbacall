@@ -42,5 +42,5 @@ class StreamMediator:
             pass
         except Exception as e:
             for op in self.operators:
-                op.close()
+                await op.close()
             traceback.print_exception(e)
