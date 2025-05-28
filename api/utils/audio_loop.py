@@ -5,7 +5,10 @@ import pyaudio
 from google import genai
 from google.genai import types
 
-from .settings import get_setting
+from api.audio_stream.gemini_stream_operator import GeminiStreamOperator
+from api.audio_stream.local_speakermic_operator import LocalSpeakerMicOperator
+from api.audio_stream.stream_mediator import StreamMediator
+from api.utils.settings import get_setting
 
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
@@ -43,9 +46,6 @@ class AudioLoop:
         self.session = None
 
         self.audio_stream = None
-
-        self.receive_audio_task = None
-        self.play_audio_task = None
 
     async def listen_audio(self):
         mic_info = pya.get_default_input_device_info()
@@ -134,6 +134,18 @@ class AudioLoop:
             traceback.print_exception(e)
 
 
+async def run_new_stream_mediator():
+    async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
+        new_stream_mediator = StreamMediator(
+            [
+                LocalSpeakerMicOperator(name="localspeakermic"),
+                GeminiStreamOperator(name="gemini_live_audio", session=session),
+            ]
+        )
+        await new_stream_mediator.run()
+
+
 if __name__ == "__main__":
-    loop = AudioLoop()
-    asyncio.run(loop.run())
+    asyncio.run(run_new_stream_mediator())
+    # loop = AudioLoop()
+    # asyncio.run(loop.run())
