@@ -15,7 +15,7 @@ from google.genai.types import (
 )
 from pydantic import BaseModel
 
-from .utils.phone_call import Task, make_phone_call
+from .utils.gemini_phone_call import Task, make_phone_call
 from .utils.prompt import ClientMessage, convert_to_gemini_messages
 from .utils.settings import get_setting
 
