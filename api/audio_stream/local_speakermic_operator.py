@@ -93,7 +93,7 @@ class LocalSpeakerMicOperator(StreamOperator):
 
     def _input_stream_callback(self, in_data, _frame_count, _time_info, _status):
         stream_data = StreamData(
-            originator=self.name + "Nah",
+            originator=self.name,
             blob=Blob(data=in_data, mime_type="audio/pcm"),
         )
         self.loop.call_soon_threadsafe(self.receive_queue.put_nowait, stream_data)
