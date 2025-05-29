@@ -26,6 +26,9 @@ class StreamMediator:
         try:
             async with asyncio.TaskGroup() as tg:
                 for op in self.operators:
+                    await op.initialize()
+
+                for op in self.operators:
                     self.tasks.append(tg.create_task(op.send_task()))
                     self.tasks.append(tg.create_task(op.receive_task()))
 

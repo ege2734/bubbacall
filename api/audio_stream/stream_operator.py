@@ -22,6 +22,9 @@ class StreamOperator:
         )
         self.operator_done: bool = False
 
+    async def initialize(self):
+        pass
+
     @abstractmethod
     async def send_task(self):
         pass
