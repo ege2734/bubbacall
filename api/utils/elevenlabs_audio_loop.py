@@ -8,7 +8,7 @@ from api.audio_stream.stream_mediator import StreamMediator
 async def run_new_stream_mediator():
     new_stream_mediator = StreamMediator(
         [
-            LocalSpeakerMicOperator(),
+            LocalSpeakerMicOperator(out_queue_max_size=100),
             ElevenLabsConversation(),
         ]
     )
