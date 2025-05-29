@@ -8,7 +8,6 @@ from api.audio_stream.local_speakermic_operator import LocalSpeakerMicOperator
 from api.audio_stream.stream_mediator import StreamMediator
 from api.utils.settings import get_setting
 
-# GOOGLE_API_KEY must be set as env variable
 client = genai.Client(
     api_key=get_setting("GEMINI_API_KEY"), http_options={"api_version": "v1alpha"}
 )
@@ -40,5 +39,3 @@ async def run_new_stream_mediator():
 
 if __name__ == "__main__":
     asyncio.run(run_new_stream_mediator())
-    # loop = AudioLoop()
-    # asyncio.run(loop.run())
