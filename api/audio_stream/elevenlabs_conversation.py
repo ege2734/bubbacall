@@ -1,5 +1,6 @@
 import base64
 import json
+from math import exp
 from typing import override
 
 import websockets
@@ -35,6 +36,7 @@ class ElevenLabsConversation(StreamOperator):
         self.conversation_config = conversation_config
         self._conversation_id = None
         self._last_interrupt_id = 0
+        self.call_ended = False
 
     @override
     async def initialize(self):
@@ -62,26 +64,35 @@ class ElevenLabsConversation(StreamOperator):
 
     @override
     async def send_task(self):
-        while True:
-            stream_data = await self.send_queue.get()
-            if stream_data.blob is None:
-                continue
-            await self.session.send(
-                json.dumps(
-                    {
-                        "user_audio_chunk": base64.b64encode(
-                            stream_data.blob.data
-                        ).decode("utf-8")
-                    }
+        try:
+            print("Is call ended?", self.call_ended)
+            while not self.call_ended:
+                stream_data = await self.send_queue.get()
+                if stream_data.blob is None:
+                    continue
+                await self.session.send(
+                    json.dumps(
+                        {
+                            "user_audio_chunk": base64.b64encode(
+                                stream_data.blob.data
+                            ).decode()
+                        }
+                    )
                 )
-            )
+        except websockets.exceptions.ConnectionClosedOK:
+            self.call_ended = True
+            print("Elevenlabs ended the call")
 
     @override
     async def receive_task(self):
-        while True:
-            raw_msg = await self.session.recv()
-            msg = json.loads(raw_msg)
-            await self._handle_message(msg)
+        try:
+            while not self.call_ended:
+                raw_msg = await self.session.recv()
+                msg = json.loads(raw_msg)
+                await self._handle_message(msg)
+        except websockets.exceptions.ConnectionClosedOK:
+            self.call_ended = True
+            print("Elevenlabs ended the call")
 
     async def _handle_message(self, message: dict):
         """Handle incoming WebSocket messages."""
@@ -163,6 +174,7 @@ class ElevenLabsConversation(StreamOperator):
 
     @override
     async def close(self):
+        self.call_ended = True
         if self.session is not None:
             await self.session.close()
         self.session = None
