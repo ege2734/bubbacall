@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from elevenlabs.conversational_ai.conversation import ConversationInitiationData
 
@@ -14,8 +15,8 @@ async def run_new_stream_mediator():
             ElevenLabsConversation(
                 conversation_config=ConversationInitiationData(
                     dynamic_variables={
-                        "task": "Ask if they have Heinz Mayonnaise?",
-                        "business_name": "Riverside Market",
+                        "task": "If my suit is ready for pickup?",
+                        "business_name": "J's cleaners",
                     },
                 )
             ),
@@ -25,4 +26,5 @@ async def run_new_stream_mediator():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(run_new_stream_mediator())
