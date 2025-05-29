@@ -23,8 +23,10 @@ class TranscriptForwarder(StreamOperator):
 
     @override
     async def send_task(self):
-        while True:
-            stream_data = await self.send_queue.get()
+        while not self.stop_event.is_set():
+            stream_data = await self.get_from_send_queue()
+            if stream_data is None:
+                continue
 
             if stream_data.input_transcription:
                 await self.out_queue.put(

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -36,7 +37,6 @@ class ElevenLabsConversation(StreamOperator):
         self.conversation_config = conversation_config
         self._conversation_id = None
         self._last_interrupt_id = 0
-        self.call_ended = False
 
     @override
     async def initialize(self):
@@ -65,10 +65,9 @@ class ElevenLabsConversation(StreamOperator):
     @override
     async def send_task(self):
         try:
-            print("Is call ended?", self.call_ended)
-            while not self.call_ended:
-                stream_data = await self.send_queue.get()
-                if stream_data.blob is None:
+            while not self.stop_event.is_set():
+                stream_data = await self.get_from_send_queue()
+                if stream_data is None or stream_data.blob is None:
                     continue
                 await self.session.send(
                     json.dumps(
@@ -80,18 +79,33 @@ class ElevenLabsConversation(StreamOperator):
                     )
                 )
         except websockets.exceptions.ConnectionClosedOK:
-            self.call_ended = True
-            logging.error("Elevenlabs ended the call")
+            if not self.stop_event.is_set():
+                await self.receive_queue.put(
+                    StreamData(
+                        originator=self.name,
+                        force_end_call=True,
+                    )
+                )
 
     @override
     async def receive_task(self):
         try:
-            while not self.call_ended:
-                raw_msg = await self.session.recv()
+            while not self.stop_event.is_set():
+                t = asyncio.create_task(self.session.recv())
+                await self.wait_respecting_shutdown(t)
+                if not t.done():
+                    continue
+                raw_msg = t.result()
                 msg = json.loads(raw_msg)
                 await self._handle_message(msg)
         except websockets.exceptions.ConnectionClosedOK:
-            self.call_ended = True
+            if not self.stop_event.is_set():
+                await self.receive_queue.put(
+                    StreamData(
+                        originator=self.name,
+                        force_end_call=True,
+                    )
+                )
 
     async def _handle_message(self, message: dict):
         """Handle incoming WebSocket messages."""
@@ -164,18 +178,27 @@ class ElevenLabsConversation(StreamOperator):
         elif msg_type == "client_tool_call":
             tool_call = message.get("client_tool_call", {})
             tool_name = tool_call.get("tool_name")
-            parameters = {
-                "tool_call_id": tool_call["tool_call_id"],
-                **tool_call.get("parameters", {}),
-            }
+            if tool_name == "task_complete":
+                await self.receive_queue.put(
+                    StreamData(
+                        originator=self.name,
+                        force_end_call=True,
+                    )
+                )
+            else:
+                parameters = {
+                    "tool_call_id": tool_call["tool_call_id"],
+                    **tool_call.get("parameters", {}),
+                }
 
-            logging.error(f"Tool call: {tool_name} with parameters: {parameters}")
+                logging.error(
+                    f"Unknown Tool call: {tool_name} with parameters: {parameters}"
+                )
         else:
             logging.error(f"Unknown message type: {msg_type}")
 
     @override
     async def close(self):
-        self.call_ended = True
-        if self.session is not None:
-            await self.session.close()
+        logging.info("Closing elevenlabs conversation")
+        await self.session.close()
         self.session = None

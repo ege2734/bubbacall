@@ -20,7 +20,7 @@ class StreamOperator:
         self.receive_queue: asyncio.Queue[StreamData] = asyncio.Queue(
             maxsize=out_queue_max_size
         )
-        self.operator_done: bool = False
+        self.stop_event: asyncio.Event = asyncio.Event()
 
     async def initialize(self):
         pass
@@ -28,6 +28,21 @@ class StreamOperator:
     @abstractmethod
     async def send_task(self):
         pass
+
+    async def wait_respecting_shutdown(self, t: asyncio.Task):
+        _, pending = await asyncio.wait(
+            [t, asyncio.create_task(self.stop_event.wait())],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+
+    async def get_from_send_queue(self) -> StreamData | None:
+        t = asyncio.create_task(self.send_queue.get())
+        await self.wait_respecting_shutdown(t)
+        if not t.done():
+            return None
+        return t.result()
 
     async def send(self, stream_data: StreamData):
         if stream_data.originator == self.name:

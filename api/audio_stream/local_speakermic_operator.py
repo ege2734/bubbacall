@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import override
 
@@ -67,9 +68,9 @@ class LocalSpeakerMicOperator(StreamOperator):
 
     @override
     async def send_task(self):
-        while True:
-            stream_data = await self.send_queue.get()
-            if stream_data.blob is None:
+        while not self.stop_event.is_set():
+            stream_data = await self.get_from_send_queue()
+            if stream_data is None or stream_data.blob is None:
                 continue
             await asyncio.to_thread(
                 self.output_stream.write,
@@ -82,16 +83,14 @@ class LocalSpeakerMicOperator(StreamOperator):
 
     @override
     async def close(self):
-        if self.input_stream is not None:
-            self.input_stream.stop_stream()
-            self.input_stream.close()
-            self.input_stream = None
-
-        if self.output_stream is not None:
-            self.output_stream.close()
-            self.output_stream = None
+        logging.info("Closing local speakermic operator")
+        self.input_stream.stop_stream()
+        self.input_stream.close()
+        self.output_stream.close()
 
     def _input_stream_callback(self, in_data, _frame_count, _time_info, _status):
+        if self.stop_event.is_set():
+            return (None, pyaudio.paComplete)
         stream_data = StreamData(
             originator=self.name,
             blob=Blob(data=in_data, mime_type="audio/pcm"),
