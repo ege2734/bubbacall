@@ -1,6 +1,6 @@
 import base64
 import json
-from math import exp
+import logging
 from typing import override
 
 import websockets
@@ -81,7 +81,7 @@ class ElevenLabsConversation(StreamOperator):
                 )
         except websockets.exceptions.ConnectionClosedOK:
             self.call_ended = True
-            print("Elevenlabs ended the call")
+            logging.error("Elevenlabs ended the call")
 
     @override
     async def receive_task(self):
@@ -92,7 +92,6 @@ class ElevenLabsConversation(StreamOperator):
                 await self._handle_message(msg)
         except websockets.exceptions.ConnectionClosedOK:
             self.call_ended = True
-            print("Elevenlabs ended the call")
 
     async def _handle_message(self, message: dict):
         """Handle incoming WebSocket messages."""
@@ -170,7 +169,9 @@ class ElevenLabsConversation(StreamOperator):
                 **tool_call.get("parameters", {}),
             }
 
-            print(f"Tool call: {tool_name} with parameters: {parameters}")
+            logging.error(f"Tool call: {tool_name} with parameters: {parameters}")
+        else:
+            logging.error(f"Unknown message type: {msg_type}")
 
     @override
     async def close(self):
