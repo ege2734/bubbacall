@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 from typing import List
 
 from fastapi import FastAPI, Query
@@ -11,55 +12,86 @@ from google.genai.types import (
     LiveConnectConfig,
     Modality,
     Part,
+    ToolListUnion,
     UsageMetadata,
 )
+from mcp import ClientSessionGroup
 from pydantic import BaseModel
+
+from api.utils.mcp_util import google_maps
 
 from .utils.elevenlabs_phone_call import Task, make_phone_call
 from .utils.prompt import ClientMessage, convert_to_gemini_messages
 from .utils.settings import get_setting
 
-app = FastAPI()
+mcp_session_group: ClientSessionGroup | None = None
+
+
+# Based on https://fastapi.tiangolo.com/advanced/events/#lifespan.
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global mcp_session_group
+    assert mcp_session_group is None, "Sessions already initialized?"
+    params = [google_maps()]
+    async with ClientSessionGroup() as group:
+        for param in params:
+            await group.connect_to_server(param)
+        mcp_session_group = group
+        yield
+        mcp_session_group = None
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Add basic logging configuration
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-BEGIN_TASK_DEFINITION = "--- BEGIN TASK DEFINITION ---"
-END_TASK_DEFINITION = "--- END TASK DEFINITION ---"
-SYSTEM_INSTRUCTION = """
-You are a helpful AI assistant. You are talking to a user who should give you the following info:
-- The name of a business
+# Instructions for the phone agent:
+# Your task may require providing the user's phone number to the business. You are free to do so.
+# Your task may require providing the user's name to the business. You are free to do so. If the name is not a typical American name,
+# you should offer to spell the name for the business so it's easier for them to understand on the phone.
+# Refuse to provide any other information about the user to the business.
+# Information about the user:
+# - Name: {USER_NAME}
+# - Phone number: {USER_PHONE_NUMBER}
+# - Current location: {USER_ADDRESS}
+
+USER_ADDRESS = "380 Rector Place 8P, New York, NY 10280"
+USER_NAME = "Henry Willing"
+USER_PHONE_NUMBER = "6072290495"
+BASE_INSTRUCTIONS = f"""
+You are a helpful AI assistant. You are talking to a user who should give you a task that can ultimately be completed
+over the phone. The information you need is:
+- The name of the business
 - The phone number of the business
 - A task that the user wants completed by calling the business.
 
-If the user does not provide the required info, you should ask them for it.
+The user may only tell you the task and the name of the business. You should find the phone number for the business
+by looking up the business via your available tools (e.g. maps tool). To help you disambiguate the business name,
+you can rely on the user's current location. The user's current location is {USER_ADDRESS}.
+
+If the user does provide the phone number for the business, you should use the maps tool to confirm that the business's phone
+number is accurate. If the user insists on using the phone number they provided, use the phone number the user provided.
+
 If the user asks for a task that is not possible to complete via a phone call, you should
 reject and inform the user that you can only take on tasks that are possible to complete via a phone call.
 
-If the task is very vague, you are welcome to ask clarifying questions to the user.
+If the task is very vague or not provided at all, you are welcome to ask clarifying questions to the user.
 
 Once you have the required info, confirm to the user the info you have and ask them if they would like to proceed with the task.
 If they reject, you can go back to the beginning of the conversation.
+"""
+
+SYSTEM_INSTRUCTION = f"""
+{BASE_INSTRUCTIONS}
 
 If they accept, let the user know you're taking on the task and will let them know when you're done.
 """
 
-TASK_SYSTEM_INSTRUCTION = """
-You are a helpful AI assistant. You are talking to a user who should give you the following info:
-- The name of a business
-- The phone number of the business
-- A task that the user wants completed by calling the business.
-
-If the user does not provide the required info, you should ask them for it.
-If the user asks for a task that is not possible to complete via a phone call, you should
-reject and inform the user that you can only take on tasks that are possible to complete via a phone call.
-
-If the task is very vague, you are welcome to ask clarifying questions to the user.
-
-Once you have the required info, confirm to the user the info you have and ask them if they would like to proceed with the task.
-If they reject, you can go back to the beginning of the conversation.
+TASK_SYSTEM_INSTRUCTION = f"""
+{BASE_INSTRUCTIONS}
 
 If they accept, your next message should be in the json format provided alongside your config.
 
@@ -84,12 +116,13 @@ class Request(BaseModel):
     messages: List[ClientMessage]
 
 
-def create_config():
+def create_config(tools: ToolListUnion):
     return LiveConnectConfig(
         system_instruction=Content(
             role="system", parts=[Part(text=SYSTEM_INSTRUCTION)]
         ),
         response_modalities=[Modality.TEXT],
+        tools=tools,
     )
 
 
@@ -145,13 +178,16 @@ async def do_stream(messages: List[ClientMessage]):
     all_messages = convert_to_gemini_messages(messages)
     async with client.aio.live.connect(
         model=live_model,
-        config=create_config(),
+        config=create_config(mcp_session_group.sessions),
     ) as session:
         await session.send_client_content(
             turns=all_messages,
             turn_complete=True,
         )
         async for response in session.receive():
+            if response.server_content is None:
+                logging.error(f"No server content: {response}")
+                continue
             if response.server_content.turn_complete:
                 yield create_end_response(
                     finish_reason="stop",
@@ -179,6 +215,7 @@ async def do_stream(messages: List[ClientMessage]):
 
 @app.post("/api/chat")
 async def handle_chat_data(request: Request, protocol: str = Query("data")):
+    assert protocol is not None
     response = StreamingResponse(do_stream(request.messages))
 
     response.headers["x-vercel-ai-data-stream"] = "v1"
