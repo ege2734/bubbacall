@@ -9,11 +9,10 @@ from google import genai
 from google.genai.types import (
     Content,
     GenerateContentConfig,
-    LiveConnectConfig,
+    GenerateContentResponseUsageMetadata,
     Modality,
     Part,
     ToolListUnion,
-    UsageMetadata,
 )
 from mcp import ClientSessionGroup
 from pydantic import BaseModel
@@ -98,12 +97,7 @@ If they accept, your next message should be in the json format provided alongsid
 Your response should have .task set to 'None' UNTIL the user confirms the task
 """
 
-live_model = "gemini-2.0-flash-live-001"
-task_model = "gemini-2.0-flash"
-# config = LiveConnectConfig(
-#     system_instruction=Content(role="system", parts=[Part(text=SYSTEM_INSTRUCTION)]),
-#     response_modalities=[Modality.TEXT],
-# )
+MODEL_NAME = "gemini-2.0-flash"
 
 client = genai.Client(api_key=get_setting("GEMINI_API_KEY"))
 
@@ -117,7 +111,7 @@ class Request(BaseModel):
 
 
 def create_config(tools: ToolListUnion):
-    return LiveConnectConfig(
+    return GenerateContentConfig(
         system_instruction=Content(
             role="system", parts=[Part(text=SYSTEM_INSTRUCTION)]
         ),
@@ -141,12 +135,14 @@ def create_text_response(text: str):
     return f"0:{json.dumps(text)}\n".encode("utf-8")
 
 
-def create_end_response(finish_reason: str, usage_metadata: UsageMetadata):
+def create_end_response(
+    finish_reason: str, usage_metadata: GenerateContentResponseUsageMetadata
+):
     return_dict = {
         "finishReason": finish_reason,
         "usage": {
             "promptTokens": usage_metadata.prompt_token_count,
-            "completionTokens": usage_metadata.response_token_count,
+            "completionTokens": usage_metadata.candidates_token_count,
         },
         "isContinued": False,
     }
@@ -155,7 +151,7 @@ def create_end_response(finish_reason: str, usage_metadata: UsageMetadata):
 
 async def generate_task(messages: List[Content]) -> TaskOrNone:
     resp = await client.aio.models.generate_content(
-        model=task_model, contents=messages, config=create_task_config()
+        model=MODEL_NAME, contents=messages, config=create_task_config()
     )
     return resp.parsed
 
@@ -176,28 +172,21 @@ async def execute_phone_call(task: Task):
 
 async def do_stream(messages: List[ClientMessage]):
     all_messages = convert_to_gemini_messages(messages)
-    async with client.aio.live.connect(
-        model=live_model,
+    async for response in await client.aio.models.generate_content_stream(
+        model=MODEL_NAME,
+        contents=all_messages,
         config=create_config(mcp_session_group.sessions),
-    ) as session:
-        await session.send_client_content(
-            turns=all_messages,
-            turn_complete=True,
-        )
-        async for response in session.receive():
-            if response.server_content is None:
-                logging.error(f"No server content: {response}")
-                continue
-            if response.server_content.turn_complete:
-                yield create_end_response(
-                    finish_reason="stop",
-                    usage_metadata=response.usage_metadata,
-                )
-                continue
-            if response.text is None:
-                continue
-
+    ):
+        assert len(response.candidates) <= 1, "Expected at most 1 candidate"
+        if response.text is not None:
             yield create_text_response(response.text)
+
+        assert len(response.candidates) == 1
+        if response.candidates[0].finish_reason is not None:
+            yield create_end_response(
+                finish_reason=response.candidates[0].finish_reason.value,
+                usage_metadata=response.usage_metadata,
+            )
 
     task_or_none = await generate_task(all_messages)
     if task_or_none.task is not None:
@@ -206,9 +195,9 @@ async def do_stream(messages: List[ClientMessage]):
 
         yield create_end_response(
             finish_reason="stop",
-            usage_metadata=UsageMetadata(
+            usage_metadata=GenerateContentResponseUsageMetadata(
                 prompt_token_count=0,
-                response_token_count=0,
+                candidates_token_count=0,
             ),
         )
 
