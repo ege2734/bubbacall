@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -18,26 +19,30 @@ from mcp import ClientSessionGroup
 from pydantic import BaseModel
 
 from api.utils.mcp_util import google_maps
+from api.utils.mongodb import MongoDB, TaskStatus
 
 from .utils.elevenlabs_phone_call import Task, make_phone_call
 from .utils.prompt import ClientMessage, convert_to_gemini_messages
 from .utils.settings import get_setting
 
 mcp_session_group: ClientSessionGroup | None = None
+mongodb: MongoDB | None = None
 
 
 # Based on https://fastapi.tiangolo.com/advanced/events/#lifespan.
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global mcp_session_group
+    global mcp_session_group, mongodb
     assert mcp_session_group is None, "Sessions already initialized?"
     params = [google_maps()]
     async with ClientSessionGroup() as group:
         for param in params:
             await group.connect_to_server(param)
         mcp_session_group = group
+        mongodb = MongoDB()
         yield
         mcp_session_group = None
+        mongodb = None
 
 
 app = FastAPI(lifespan=lifespan)
@@ -175,6 +180,7 @@ async def execute_phone_call(task: Task):
 
 async def do_stream(messages: List[ClientMessage]):
     all_messages = convert_to_gemini_messages(messages)
+
     async for response in await client.aio.models.generate_content_stream(
         model=MODEL_NAME,
         contents=all_messages,
@@ -193,8 +199,36 @@ async def do_stream(messages: List[ClientMessage]):
 
     task_or_none = await generate_task(all_messages)
     if task_or_none.task is not None:
-        async for transcript in execute_phone_call(task_or_none.task):
-            yield create_text_response(transcript)
+        # Store the task in MongoDB
+        task_id = await mongodb.store_task(task_or_none.task)
+
+        # Start a background task to execute the phone call and update status
+        async def execute_call():
+            try:
+                await mongodb.update_task_status(
+                    task_id, TaskStatus.IN_PROGRESS, "Starting phone call..."
+                )
+                async for transcript in execute_phone_call(task_or_none.task):
+                    await mongodb.update_task_status(
+                        task_id, TaskStatus.IN_PROGRESS, transcript
+                    )
+                await mongodb.update_task_status(
+                    task_id, TaskStatus.COMPLETED, "Call completed successfully"
+                )
+            except Exception as e:
+                await mongodb.update_task_status(
+                    task_id, TaskStatus.FAILED, f"Call failed: {str(e)}"
+                )
+                raise
+
+        # Start the call execution in the background
+        asyncio.create_task(execute_call())
+
+        # Watch and yield task updates
+        async for update in mongodb.watch_task_updates(task_id):
+            yield create_text_response(update.message)
+            if update.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                break
 
         yield create_end_response(
             finish_reason="stop",
