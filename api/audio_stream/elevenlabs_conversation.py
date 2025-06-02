@@ -22,6 +22,8 @@ class ElevenLabsConversation(StreamOperator):
     by ElevenLabs
 
     This operator does not own the lifetime of the `client`.
+    This class assumes that it sends & receives audio/mulaw 8000Hz.
+    See https://elevenlabs.io/docs/conversational-ai/phone-numbers/twilio-integration/custom-server#set-input-format
     """
 
     def __init__(

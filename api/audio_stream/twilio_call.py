@@ -18,7 +18,15 @@ class TwilioCall(StreamOperator):
     `Receive` receives audio from Twilio.
 
     This class does not own `ws`, and therefore WILL NOT close it when it is done.
-    More info at: https://www.twilio.com/docs/voice/media-streams/websocket-messages#send-websocket-messages-to-twilio
+    Overall specs:
+      * https://www.twilio.com/docs/voice/media-streams/websocket-messages
+      * https://www.twilio.com/docs/voice/media-streams
+
+    Conceptually Twilio Streams: https://www.twilio.com/docs/voice/twiml/stream
+
+    Kinda based on https://github.com/twilio-samples/speech-assistant-openai-realtime-api-python/blob/main/main.py
+    Also: https://www.twilio.com/en-us/blog/outbound-calls-python-openai-realtime-api-voice#step-11-set-the-domain-variable
+    And also: https://github.com/twilio-samples/speech-assistant-openai-realtime-api-python/tree/main?tab=readme-ov-file
 
     """
 
@@ -36,8 +44,10 @@ class TwilioCall(StreamOperator):
     async def initialize(self):
         async for raw_msg in self.ws.iter_text():
             message = json.loads(raw_msg)
+            # https://www.twilio.com/docs/voice/media-streams/websocket-messages#connected-message
             if message["event"] == "connected":
                 logging.error("Confirmed connection")
+            # https://www.twilio.com/docs/voice/media-streams/websocket-messages#start-message
             elif message["event"] == "start":
                 self.stream_sid = message["start"]["streamSid"]
                 break
@@ -80,6 +90,7 @@ class TwilioCall(StreamOperator):
                     continue
                 raw_msg = t.result()
                 msg = json.loads(raw_msg)
+                # https://www.twilio.com/docs/voice/media-streams/websocket-messages#media-message
                 if msg["event"] == "media":
                     await self.receive_queue.put(
                         StreamData(

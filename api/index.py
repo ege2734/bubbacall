@@ -179,10 +179,19 @@ async def generate_task(messages: List[Content]) -> TaskOrNone:
 # TODO(ege): The names here are toooooo similar to the names in elevenlabs_phone_call.py
 # and twilio_phone_call.py. Fixing this would avoid confusion.
 async def make_real_phone_call(task_id: str):
+    """
+    Makes an HTTP request to start an outbound call. Loosely based on the example
+    in https://github.com/twilio/media-streams.
+    Additional references for the TWiML stuff (as well as handling the communication
+    lifetime with Twilio):
+       1. https://www.twilio.com/docs/voice/twiml/stream.
+       2. Call resource: https://www.twilio.com/docs/voice/api/call-resource#create-a-call-resource
+    """
     raw_domain = get_setting("FASTAPI_RAW_DOMAIN")
-    # More info at https://www.twilio.com/docs/voice/twiml/stream
     response = VoiceResponse()
     connect = Connect()
+    # At some point, task_id may need to be passed as a custom parameter.
+    # https://www.twilio.com/docs/voice/twiml/stream#custom-parameters
     stream = connect.stream(url=f"wss://{raw_domain}/task-stream/{task_id}")
     stream.parameter(name="task_id", value=task_id)
     response.append(connect)
