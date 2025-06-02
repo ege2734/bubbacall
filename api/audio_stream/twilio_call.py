@@ -18,6 +18,7 @@ class TwilioCall(StreamOperator):
     `Receive` receives audio from Twilio.
 
     This class does not own `ws`, and therefore WILL NOT close it when it is done.
+    More info at: https://www.twilio.com/docs/voice/media-streams/websocket-messages#send-websocket-messages-to-twilio
 
     """
 
@@ -35,7 +36,9 @@ class TwilioCall(StreamOperator):
     async def initialize(self):
         async for raw_msg in self.ws.iter_text():
             message = json.loads(raw_msg)
-            if message["event"] == "start":
+            if message["event"] == "connected":
+                logging.error("Confirmed connection")
+            elif message["event"] == "start":
                 self.stream_sid = message["start"]["streamSid"]
                 break
             logging.error(f"Received unexpected message: {message}")
