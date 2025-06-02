@@ -21,8 +21,6 @@ mongodb_client: MongoDB | None = None
 twilio_client: TwilioClient | None = None
 gemini_client: genai.Client | None = None
 
-FAKE_PHONE_CALL = True
-
 
 # Based on https://fastapi.tiangolo.com/advanced/events/#lifespan.
 @asynccontextmanager
@@ -79,6 +77,7 @@ async def handle_chat_data(request: Request, protocol: str = Query("data")):
             twilio_client=twilio_client,
             mongodb_client=mongodb_client,
             messages=request.messages,
+            fake_phone_call=True,
         )
     )
 

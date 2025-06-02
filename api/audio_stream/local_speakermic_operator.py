@@ -1,4 +1,5 @@
 import asyncio
+import audioop
 import logging
 from dataclasses import dataclass
 from typing import override
@@ -12,8 +13,8 @@ from api.audio_stream.stream_operator import StreamOperator
 
 @dataclass
 class SpeakerMicConfig:
-    mic_sample_rate: int = 16000
-    speaker_sample_rate: int = 16000
+    mic_sample_rate: int = 8000
+    speaker_sample_rate: int = 8000
     mic_frames_per_buffer: int = 4000
     speaker_frames_per_buffer: int = 1000
     channels: int = 1
@@ -74,7 +75,7 @@ class LocalSpeakerMicOperator(StreamOperator):
                 continue
             await asyncio.to_thread(
                 self.output_stream.write,
-                stream_data.blob.data,
+                audioop.ulaw2lin(stream_data.blob.data, 2),
             )
 
     @override
@@ -93,7 +94,7 @@ class LocalSpeakerMicOperator(StreamOperator):
             return (None, pyaudio.paComplete)
         stream_data = StreamData(
             originator=self.name,
-            blob=Blob(data=in_data, mime_type="audio/pcm"),
+            blob=Blob(data=audioop.lin2ulaw(in_data, 2), mime_type="audio/pcm"),
         )
         self.loop.call_soon_threadsafe(self.receive_queue.put_nowait, stream_data)
         return (None, pyaudio.paContinue)
