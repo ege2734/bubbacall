@@ -1,10 +1,9 @@
-import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, WebSocket
 from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai.types import (
@@ -17,22 +16,28 @@ from google.genai.types import (
 )
 from mcp import ClientSessionGroup
 from pydantic import BaseModel
+from twilio.rest import Client as TwilioClient
+from twilio.twiml.voice_response import Connect, Parameter, Start, Stream, VoiceResponse
 
 from api.utils.mcp_util import google_maps
 from api.utils.mongodb import MongoDB, TaskStatus
 
-from .utils.elevenlabs_phone_call import Task, make_phone_call
+from .utils.elevenlabs_phone_call import Task, make_fake_phone_call
 from .utils.prompt import ClientMessage, convert_to_gemini_messages
 from .utils.settings import get_setting
+from .utils.twilio_phone_call import make_phone_call
 
 mcp_session_group: ClientSessionGroup | None = None
 mongodb: MongoDB | None = None
+twilio_client: TwilioClient | None = None
+
+FAKE_PHONE_CALL = True
 
 
 # Based on https://fastapi.tiangolo.com/advanced/events/#lifespan.
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global mcp_session_group, mongodb
+    global mcp_session_group, mongodb, twilio_client
     assert mcp_session_group is None, "Sessions already initialized?"
     params = [google_maps()]
     async with ClientSessionGroup() as group:
@@ -40,9 +45,13 @@ async def lifespan(_: FastAPI):
             await group.connect_to_server(param)
         mcp_session_group = group
         mongodb = MongoDB()
+        twilio_client = TwilioClient(
+            get_setting("TWILIO_ACCOUNT_SID"), get_setting("TWILIO_AUTH_TOKEN")
+        )
         yield
         mcp_session_group = None
         mongodb = None
+        twilio_client = None
 
 
 app = FastAPI(lifespan=lifespan)
@@ -53,9 +62,12 @@ logging.basicConfig(
 )
 
 # Instructions for the phone agent:
-# Your task may require providing the user's phone number to the business. You are free to do so.
-# Your task may require providing the user's name to the business. You are free to do so. If the name is not a typical American name,
-# you should offer to spell the name for the business so it's easier for them to understand on the phone.
+# Your task may require providing the user's phone number to the business. You are free
+# to do so.
+# Your task may require providing the user's name to the business. You are free to do
+# so. If the name is not a typical American name,
+# you should offer to spell the name for the business so it's easier for them to
+# understand on the phone.
 # Refuse to provide any other information about the user to the business.
 # Information about the user:
 # - Name: {USER_NAME}
@@ -164,18 +176,42 @@ async def generate_task(messages: List[Content]) -> TaskOrNone:
     return resp.parsed
 
 
-async def execute_phone_call(task: Task):
+# TODO(ege): The names here are toooooo similar to the names in elevenlabs_phone_call.py
+# and twilio_phone_call.py. Fixing this would avoid confusion.
+async def make_real_phone_call(task_id: str):
+    raw_domain = get_setting("FASTAPI_RAW_DOMAIN")
+    # More info at https://www.twilio.com/docs/voice/twiml/stream
+    response = VoiceResponse()
+    connect = Connect()
+    stream = connect.stream(url=f"wss://{raw_domain}/task-stream/{task_id}")
+    stream.parameter(name="task_id", value=task_id)
+    response.append(connect)
+
+    # TODO(ege): Replace the "To" with the business's phone number.
+    # TODO(ege): Check if you can replace "from" with the user's phone number.
+    logging.error(f"Twiml stuff: {response}")
+    call = twilio_client.calls.create(
+        from_="+18556282791", to="+16072290494", twiml=response
+    )
+    logging.error(f"Call created: {call.sid}")
+
+
+async def execute_phone_call(task: Task, task_id: str):
     roles_lookup = {"input": task.business_name, "output": "Bubba"}
     last_role: str | None = None
-    async for transcript in make_phone_call(task):
-        assert transcript.role in roles_lookup
-        if last_role == transcript.role:
-            resp_str = transcript.text
-        else:
-            last_role = transcript.role
-            resp_str = f"\n\n{roles_lookup[transcript.role]}: {transcript.text}"
+    if FAKE_PHONE_CALL:
+        async for transcript in make_fake_phone_call(task):
+            assert transcript.role in roles_lookup
+            if last_role == transcript.role:
+                resp_str = transcript.text
+            else:
+                last_role = transcript.role
+                resp_str = f"\n\n{roles_lookup[transcript.role]}: {transcript.text}"
 
-        yield resp_str
+            yield resp_str
+        return
+    else:
+        await make_real_phone_call(task_id)
 
 
 async def do_stream(messages: List[ClientMessage]):
@@ -202,27 +238,7 @@ async def do_stream(messages: List[ClientMessage]):
         # Store the task in MongoDB
         task_id = await mongodb.store_task(task_or_none.task)
 
-        # Start a background task to execute the phone call and update status
-        async def execute_call():
-            try:
-                await mongodb.update_task_status(
-                    task_id, TaskStatus.IN_PROGRESS, "Starting phone call..."
-                )
-                async for transcript in execute_phone_call(task_or_none.task):
-                    await mongodb.update_task_status(
-                        task_id, TaskStatus.IN_PROGRESS, transcript
-                    )
-                await mongodb.update_task_status(
-                    task_id, TaskStatus.COMPLETED, "Call completed successfully"
-                )
-            except Exception as e:
-                await mongodb.update_task_status(
-                    task_id, TaskStatus.FAILED, f"Call failed: {str(e)}"
-                )
-                raise
-
-        # Start the call execution in the background
-        asyncio.create_task(execute_call())
+        await make_real_phone_call(task_id)
 
         # Watch and yield task updates
         async for update in mongodb.watch_task_updates(task_id):
@@ -237,6 +253,48 @@ async def do_stream(messages: List[ClientMessage]):
                 candidates_token_count=0,
             ),
         )
+
+
+async def twilio_phone_call_wrapper(websocket: WebSocket, task: Task, task_id: str):
+    roles_lookup = {"input": task.business_name, "output": "Bubba"}
+    last_role: str | None = None
+    async for transcript in make_phone_call(websocket, task, task_id):
+        assert transcript.role in roles_lookup
+        if last_role == transcript.role:
+            resp_str = transcript.text
+        else:
+            last_role = transcript.role
+            resp_str = f"\n\n{roles_lookup[transcript.role]}: {transcript.text}"
+
+        yield resp_str
+
+
+@app.websocket("/task-stream/{task_id}")
+async def task_stream(websocket: WebSocket, task_id: str):
+    # task_id = "fake_task_id"
+    logging.error(f"Task stream connected: {task_id}")
+    await websocket.accept()
+    task = await mongodb.get_task(task_id)
+
+    assert task is not None
+
+    try:
+        # TODO(ege): Just have a MongodbForwarder operator and handle this logic there.
+        await mongodb.update_task_status(
+            task_id, TaskStatus.IN_PROGRESS, "Starting phone call..."
+        )
+        async for transcript in twilio_phone_call_wrapper(websocket, task, task_id):
+            await mongodb.update_task_status(
+                task_id, TaskStatus.IN_PROGRESS, transcript
+            )
+        await mongodb.update_task_status(
+            task_id, TaskStatus.COMPLETED, "Call completed successfully"
+        )
+    except Exception as e:
+        await mongodb.update_task_status(
+            task_id, TaskStatus.FAILED, f"Call failed: {str(e)}"
+        )
+        raise
 
 
 @app.post("/api/chat")

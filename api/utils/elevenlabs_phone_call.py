@@ -15,7 +15,7 @@ class Task(BaseModel):
     task: str
 
 
-async def make_phone_call(task: Task):
+async def make_fake_phone_call(task: Task):
     transcript_queue: asyncio.Queue[TranscriptData] = asyncio.Queue()
     try:
         new_stream_mediator = StreamMediator(
