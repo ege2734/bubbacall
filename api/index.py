@@ -77,7 +77,6 @@ async def handle_chat_data(request: Request, protocol: str = Query("data")):
             twilio_client=twilio_client,
             mongodb_client=mongodb_client,
             messages=request.messages,
-            fake_phone_call=True,
         )
     )
 
