@@ -41,7 +41,8 @@ class TwilioCall(StreamOperator):
             elif message["event"] == "start":
                 self.stream_sid = message["start"]["streamSid"]
                 break
-            logging.error(f"Received unexpected message: {message}")
+            else:
+                logging.error(f"Received unexpected message: {message}")
         assert self.stream_sid is not None
 
     @override
