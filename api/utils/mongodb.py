@@ -113,7 +113,7 @@ class MongoDB:
                 logging.error(f"Received change: {change}")
                 # The updates look like updates.0, updates.1, etc, so this handles that.
                 for k, v in change["updateDescription"]["updatedFields"].items():
-                    if k.startswith("updates."):
+                    if k.startswith("updates"):
                         yield TaskUpdate(
                             message=v["message"],
                             timestamp=v["timestamp"],
