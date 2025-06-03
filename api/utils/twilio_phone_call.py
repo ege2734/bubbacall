@@ -7,21 +7,22 @@ from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
 from api.audio_stream.elevenlabs_conversation import ElevenLabsConversation
+from api.audio_stream.mongodb_forwarder import MongoDBForwarder
 from api.audio_stream.stream_mediator import StreamMediator
-from api.audio_stream.transcript_forwarder import TranscriptData, TranscriptForwarder
 from api.audio_stream.twilio_call import TwilioCall
-from api.utils.mongodb import MongoDB, TaskStatus
+from api.utils.mongodb import MongoDB
 from api.utils.settings import get_setting
 from api.utils.task import Task
 
 
-async def _stream_call(twilio_websocket: WebSocket, task: Task, task_id: str):
-    transcript_queue: asyncio.Queue[TranscriptData] = asyncio.Queue()
+async def stream_call(
+    mongodb_client: MongoDB, websocket: WebSocket, task: Task, task_id: str
+):
     logging.info(f"Starting stream for twilio call for task {task_id}")
     try:
         new_stream_mediator = StreamMediator(
             [
-                TwilioCall(twilio_websocket),
+                TwilioCall(websocket),
                 ElevenLabsConversation(
                     conversation_config=ConversationInitiationData(
                         dynamic_variables={
@@ -30,53 +31,12 @@ async def _stream_call(twilio_websocket: WebSocket, task: Task, task_id: str):
                         },
                     )
                 ),
-                # TODO(ege): Replace this with "DatabaseForwarder" that just writes
-                # the updates to MongoDb directly.
-                TranscriptForwarder(out_queue=transcript_queue),
+                MongoDBForwarder(task_id, mongodb_client),
             ]
         )
-        call_task = asyncio.create_task(new_stream_mediator.run())
-        get_queue_task = asyncio.create_task(transcript_queue.get())
-        while not call_task.done():
-            await asyncio.wait(
-                [call_task, get_queue_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if get_queue_task.done():
-                yield get_queue_task.result()
-                get_queue_task = asyncio.create_task(transcript_queue.get())
+        await new_stream_mediator.run()
     except asyncio.CancelledError:
         pass
-    finally:
-        call_task.cancel()
-        get_queue_task.cancel()
-
-
-async def stream_call(mongodb: MongoDB, websocket: WebSocket, task: Task, task_id: str):
-    roles_lookup = {"input": task.business_name, "output": "Bubba"}
-    last_role: str | None = None
-    await mongodb.update_task_status(
-        task_id, TaskStatus.IN_PROGRESS, "Starting phone call..."
-    )
-    try:
-        # TODO(ege): Just have a MongodbForwarder operator and handle this logic there.
-        async for transcript in _stream_call(websocket, task, task_id):
-            assert transcript.role in roles_lookup
-            if last_role == transcript.role:
-                resp_str = transcript.text
-            else:
-                last_role = transcript.role
-                resp_str = f"\n\n{roles_lookup[transcript.role]}: {transcript.text}"
-
-            await mongodb.update_task_status(task_id, TaskStatus.IN_PROGRESS, resp_str)
-        await mongodb.update_task_status(
-            task_id, TaskStatus.COMPLETED, "Call completed successfully"
-        )
-    except Exception as e:
-        await mongodb.update_task_status(
-            task_id, TaskStatus.FAILED, f"Call failed: {str(e)}"
-        )
-        raise
 
 
 async def request_outbound_call(task_id: str, twilio_client: TwilioClient):

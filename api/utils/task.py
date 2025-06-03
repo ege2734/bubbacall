@@ -1,3 +1,4 @@
+from enum import StrEnum, auto
 from typing import List
 
 from google import genai
@@ -13,6 +14,13 @@ If they accept, your next message should be in the json format provided alongsid
 
 Your response should have .task set to 'None' UNTIL the user confirms the task
 """
+
+
+class TaskStatus(StrEnum):
+    CREATED = auto()
+    IN_PROGRESS = auto()
+    # Completed or failed.
+    FINISHED = auto()
 
 
 class Task(BaseModel):

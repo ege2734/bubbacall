@@ -1,5 +1,5 @@
+import logging
 from datetime import datetime
-from enum import Enum
 from typing import AsyncGenerator, Optional
 
 from bson import ObjectId
@@ -7,22 +7,13 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 
 from api.utils.settings import get_setting
-
-from .elevenlabs_phone_call import Task
-
-
-class TaskStatus(str, Enum):
-    CREATED = "created"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
+from api.utils.task import Task, TaskStatus
 
 
 class TaskUpdate(BaseModel):
-    task_id: str  # This will store the string representation of ObjectId
-    status: TaskStatus
-    message: str
     timestamp: datetime
+    message: dict[str, str] = {}
+    status: TaskStatus | None = None
 
 
 class StoredTask(BaseModel):
@@ -51,33 +42,44 @@ class MongoDB:
         """Store a task in MongoDB and return the ObjectId as string"""
         await self.connect()
 
+        now = datetime.now()
         task_data = {
             "business_name": task.business_name,
             "business_phone_number": task.business_phone_number,
             "task": task.task,
             "status": TaskStatus.CREATED,
-            "created_at": datetime.now(),
-            "updates": [
-                {
-                    "status": TaskStatus.CREATED,
-                    "message": "Task created",
-                    "timestamp": datetime.now(),
-                }
-            ],
+            "created_at": now,
+            "modified_at": now,
         }
 
         result = await self._db.tasks.insert_one(task_data)
         return str(result.inserted_id)
 
-    async def update_task_status(self, task_id: str, status: TaskStatus, message: str):
-        """Update task status and add a new update entry"""
+    async def update_task_progress(
+        self,
+        task_id: str,
+        *,
+        message: dict[str, str] = {},
+        task_status: TaskStatus | None = None,
+    ):
+        """Update task status and/or add a new update entry"""
         await self.connect()
+        assert message or task_status, "Must provide either message or task_status"
 
-        update = {"status": status, "message": message, "timestamp": datetime.now()}
+        update_payload = {}
+        now = datetime.now()
+        if message:
+            update = {"message": message, "timestamp": now}
+            update_payload["$push"] = {"updates": update}
+        if task_status:
+            update_payload["$set"] = {
+                "status": task_status,
+                "modified_at": now,
+            }
 
         await self._db.tasks.update_one(
             {"_id": ObjectId(task_id)},
-            {"$set": {"status": status}, "$push": {"updates": update}},
+            update_payload,
         )
 
     async def watch_task_updates(
@@ -88,11 +90,10 @@ class MongoDB:
 
         # Get initial task state
         task = await self._db.tasks.find_one({"_id": ObjectId(task_id)})
-        if task and task.get("updates"):
+        assert task is not None, "Task not found"
+        if task.get("updates"):
             for update in task["updates"]:
                 yield TaskUpdate(
-                    task_id=task_id,
-                    status=update["status"],
                     message=update["message"],
                     timestamp=update["timestamp"],
                 )
@@ -109,18 +110,21 @@ class MongoDB:
 
         async with self._db.tasks.watch(pipeline) as change_stream:
             async for change in change_stream:
+                logging.error(f"Received change: {change}")
                 # The updates look like updates.0, updates.1, etc, so this handles that.
-                # TODO(ege): This doesn't handle a case where a single update call
-                # adds multiple messages.
                 for k, v in change["updateDescription"]["updatedFields"].items():
-                    if not k.startswith("updates."):
-                        continue
-                    yield TaskUpdate(
-                        task_id=task_id,
-                        status=v["status"],
-                        message=v["message"],
-                        timestamp=v["timestamp"],
-                    )
+                    if k.startswith("updates."):
+                        yield TaskUpdate(
+                            message=v["message"],
+                            timestamp=v["timestamp"],
+                        )
+                    if k == "status":
+                        yield TaskUpdate(
+                            status=v,
+                            timestamp=change["updateDescription"]["updatedFields"][
+                                "modified_at"
+                            ],
+                        )
 
     async def get_task(self, task_id: str) -> Optional[Task]:
         """Retrieve a task by its ObjectId"""

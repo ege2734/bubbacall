@@ -4,13 +4,13 @@ from elevenlabs.conversational_ai.conversation import ConversationInitiationData
 
 from api.audio_stream.elevenlabs_conversation import ElevenLabsConversation
 from api.audio_stream.local_speakermic_operator import LocalSpeakerMicOperator
+from api.audio_stream.mongodb_forwarder import MongoDBForwarder
 from api.audio_stream.stream_mediator import StreamMediator
-from api.audio_stream.transcript_forwarder import TranscriptData, TranscriptForwarder
+from api.utils.mongodb import MongoDB
 from api.utils.task import Task
 
 
-async def _stream_call(task: Task):
-    transcript_queue: asyncio.Queue[TranscriptData] = asyncio.Queue()
+async def stream_call(mongodb_client: MongoDB, task: Task, task_id: str):
     try:
         new_stream_mediator = StreamMediator(
             [
@@ -23,35 +23,9 @@ async def _stream_call(task: Task):
                         },
                     )
                 ),
-                TranscriptForwarder(out_queue=transcript_queue),
+                MongoDBForwarder(task_id, mongodb_client),
             ]
         )
-        call_task = asyncio.create_task(new_stream_mediator.run())
-        get_queue_task = asyncio.create_task(transcript_queue.get())
-        while not call_task.done():
-            await asyncio.wait(
-                [call_task, get_queue_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if get_queue_task.done():
-                yield get_queue_task.result()
-                get_queue_task = asyncio.create_task(transcript_queue.get())
+        await new_stream_mediator.run()
     except asyncio.CancelledError:
         pass
-    finally:
-        call_task.cancel()
-        get_queue_task.cancel()
-
-
-async def stream_call(task: Task):
-    roles_lookup = {"input": task.business_name, "output": "Bubba"}
-    last_role: str | None = None
-    async for transcript in _stream_call(task):
-        assert transcript.role in roles_lookup
-        if last_role == transcript.role:
-            resp_str = transcript.text
-        else:
-            last_role = transcript.role
-            resp_str = f"\n\n{roles_lookup[transcript.role]}: {transcript.text}"
-
-        yield resp_str

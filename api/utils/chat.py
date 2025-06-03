@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 from typing import List
 
 from google import genai
@@ -15,7 +17,7 @@ from twilio.rest import Client as TwilioClient
 
 from api.utils.chat_base import BASE_INSTRUCTIONS
 from api.utils.elevenlabs_phone_call import stream_call as stream_elevenlabs_call
-from api.utils.mongodb import MongoDB, TaskStatus
+from api.utils.mongodb import MongoDB, TaskStatus, TaskUpdate
 from api.utils.prompt import ClientMessage, convert_to_gemini_messages
 from api.utils.task import generate_task
 from api.utils.twilio_phone_call import request_outbound_call
@@ -55,6 +57,32 @@ def create_end_response(
     return f"d:{json.dumps(return_dict)}\n".encode("utf-8")
 
 
+async def generate_update_stream(
+    mongodb_client: MongoDB, business_name: str, task_id: str
+):
+    roles_lookup = {
+        "input_transcript": business_name,
+        "output_transcript": "Bubba",
+        "output_transcript_correction": "Bubba (correction)",
+    }
+    last_role: str | None = None
+    async for update in mongodb_client.watch_task_updates(task_id):
+        logging.error(f"Received update: {update}")
+        if update.message:
+            assert update.message["type"] in roles_lookup, "Unknown message type"
+            if last_role == update.message["type"]:
+                resp_str = update.message["value"]
+            else:
+                last_role = update.message["type"]
+                resp_str = f"\n\n{roles_lookup[update.message['type']]}: {update.message['value']}"
+
+            yield resp_str
+
+        if update.status == TaskStatus.FINISHED:
+            yield "\n\n Task finished"
+            break
+
+
 async def do_stream(
     gemini_client: genai.Client,
     mcp_session_group: ClientSessionGroup,
@@ -89,17 +117,18 @@ async def do_stream(
         task_id = await mongodb_client.store_task(task_or_none.task)
         if fake_phone_call:
             # Kicks off a "fake" phone call via your computer's speakermic.
-            async for transcript in stream_elevenlabs_call(task_or_none.task):
-                yield create_text_response(transcript)
+            asyncio.create_task(
+                stream_elevenlabs_call(mongodb_client, task_or_none.task, task_id)
+            )
         else:
             # Kicks off a Twilio phone call
             await request_outbound_call(task_id, twilio_client)
 
-            # Watch and yield task updates
-            async for update in mongodb_client.watch_task_updates(task_id):
-                yield create_text_response(update.message)
-                if update.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-                    break
+        # Watch and yield task updates
+        async for update_str in generate_update_stream(
+            mongodb_client, task_or_none.task.business_name, task_id
+        ):
+            yield create_text_response(update_str)
 
         yield create_end_response(
             finish_reason="stop",
