@@ -1,4 +1,3 @@
-import logging
 from datetime import datetime
 from typing import AsyncGenerator, Optional
 
@@ -110,7 +109,6 @@ class MongoDB:
 
         async with self._db.tasks.watch(pipeline) as change_stream:
             async for change in change_stream:
-                logging.error(f"Received change: {change}")
                 # The updates look like updates.0, updates.1, etc, so this handles that.
                 for k, v in change["updateDescription"]["updatedFields"].items():
                     if k.startswith("updates."):
