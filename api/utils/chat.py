@@ -17,9 +17,9 @@ from twilio.rest import Client as TwilioClient
 
 from api.utils.chat_base import BASE_INSTRUCTIONS
 from api.utils.elevenlabs_phone_call import stream_call as stream_elevenlabs_call
-from api.utils.mongodb import MongoDB, TaskStatus, TaskUpdate
+from api.utils.mongodb import MongoDB, TaskStatus
 from api.utils.prompt import ClientMessage, convert_to_gemini_messages
-from api.utils.task import generate_task
+from api.utils.task import Task, generate_task
 from api.utils.twilio_phone_call import request_outbound_call
 
 SYSTEM_INSTRUCTION = f"""
@@ -81,6 +81,53 @@ async def generate_update_stream(
         if update.status == TaskStatus.FINISHED:
             yield "\n\n Task finished"
             break
+
+
+async def mock_gemini_do_stream(
+    gemini_client: genai.Client,  # pylint: disable=unused-argument
+    mcp_session_group: ClientSessionGroup,  # pylint: disable=unused-argument
+    twilio_client: TwilioClient,
+    mongodb_client: MongoDB,
+    messages: List[ClientMessage],  # pylint: disable=unused-argument
+    *,
+    model: str = "gemini-2.0-flash",  # pylint: disable=unused-argument
+    fake_phone_call: bool = False,
+):
+    yield create_text_response(
+        "Okay, I will look up Riverside Market. I am looking up the phone number for "
+        "Riverside Market. I am looking up Riverside Market. I found a Riverside Market"
+        " at 300 Albany St, New York, NY 10280. Their phone number is (212) 945-0500. "
+        "You would like me to call them to ask if they sell Heinz Mayo. Is that "
+        "correct?"
+    )
+
+    task = Task(
+        business_name="Riverside Market",
+        business_phone_number="(212) 945-0500",
+        task="Ask if they sell Heinz Mayo",
+    )
+    # Store the task in MongoDB
+    task_id = await mongodb_client.store_task(task)
+    if fake_phone_call:
+        # Kicks off a "fake" phone call via your computer's speakermic.
+        asyncio.create_task(stream_elevenlabs_call(mongodb_client, task, task_id))
+    else:
+        # Kicks off a Twilio phone call
+        await request_outbound_call(task_id, twilio_client)
+
+    # Watch and yield task updates
+    async for update_str in generate_update_stream(
+        mongodb_client, task.business_name, task_id
+    ):
+        yield create_text_response(update_str)
+
+    yield create_end_response(
+        finish_reason="stop",
+        usage_metadata=GenerateContentResponseUsageMetadata(
+            prompt_token_count=0,
+            candidates_token_count=0,
+        ),
+    )
 
 
 async def do_stream(

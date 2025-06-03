@@ -9,7 +9,7 @@ from mcp import ClientSessionGroup
 from pydantic import BaseModel
 from twilio.rest import Client as TwilioClient
 
-from api.utils.chat import do_stream
+from api.utils.chat import do_stream, mock_gemini_do_stream
 from api.utils.mcp_util import google_maps
 from api.utils.mongodb import MongoDB
 from api.utils.prompt import ClientMessage
@@ -71,7 +71,7 @@ async def task_stream(websocket: WebSocket, task_id: str):
 async def handle_chat_data(request: Request, protocol: str = Query("data")):
     assert protocol is not None
     response = StreamingResponse(
-        do_stream(
+        mock_gemini_do_stream(
             gemini_client=gemini_client,
             mcp_session_group=mcp_session_group,
             twilio_client=twilio_client,

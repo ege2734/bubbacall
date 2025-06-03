@@ -113,10 +113,18 @@ class MongoDB:
                 logging.error(f"Received change: {change}")
                 # The updates look like updates.0, updates.1, etc, so this handles that.
                 for k, v in change["updateDescription"]["updatedFields"].items():
-                    if k.startswith("updates"):
+                    if k.startswith("updates."):
                         yield TaskUpdate(
                             message=v["message"],
                             timestamp=v["timestamp"],
+                        )
+                    elif k.startswith("updates"):
+                        # When the first update is pushed, the change stream is the
+                        # entire array. For later updates, it's just the element
+                        # that was pushed.
+                        yield TaskUpdate(
+                            message=v[0]["message"],
+                            timestamp=v[0]["timestamp"],
                         )
                     if k == "status":
                         yield TaskUpdate(
